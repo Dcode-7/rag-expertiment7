@@ -1,0 +1,7 @@
+Test case,Expected result,Actual result,Pass/Fail
+Health endpoint,API reports running,"HTTP 200: {'status': 'ok', 'api': 'running', 'knowledge_base_loaded': True, 'backend': 'ollama', 'chunks': 161}",Pass
+Supported question,Grounded answer is returned,"HTTP 200: You can access Kindle Unlimited on any Kindle device, smartphone, computer, or tablet through the free Kindle app. You can borrow up to 20 titles at a time from | sources=['Expt6_Source_File.pdf (p.5, Using Your Subscription)']",Pass
+Unsupported question,Insufficient information/fallback,HTTP 200: I couldn't find a reliable answer in the available FAQ. Please contact the support team through the Help section. Do not | note=question not covered by FAQ (similarity 0.21),Pass
+Empty question,Validation error,HTTP 422: ['question must not be empty'],Pass
+Very long question (1500 chars),Validation error,HTTP 422: ['question must be at most 1000 characters (got 1500)'],Pass
+Response-time measurement,Latency is recorded,latency_ms=2856.1 | X-Response-Time-ms=2857.9 (also in logs/app.log),Pass
