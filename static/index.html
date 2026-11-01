@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Support Assistant</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #6b7280;
+    --border: #e3e6eb; --accent: #2f6fde; --accent-text: #ffffff;
+    --user: #e8f0fe; --warn: #b45309; --warn-bg: #fff7e6; --err: #b91c1c; --err-bg: #fdecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b1f27; --text: #e6e8ec; --muted: #9aa3b2;
+      --border: #2b313c; --accent: #5b8ef0; --accent-text: #0b0d12;
+      --user: #22324f; --warn: #f5b454; --warn-bg: #3a2c12; --err: #f28b8b; --err-bg: #3b1b1b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px; min-height: 100vh;
+          display: flex; flex-direction: column; gap: 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; }
+  .status { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: #22a06b; } .dot.bad { background: var(--err); }
+  .chat { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+  .msg { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border);
+         background: var(--card); white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { background: var(--user); align-self: flex-end; max-width: 85%; }
+  .msg.bot { align-self: stretch; }
+  .msg.error { background: var(--err-bg); color: var(--err); border-color: transparent; }
+  .meta { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 12px; }
+  .tag { background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+  .tag.warn { color: var(--warn); background: var(--warn-bg); border-color: transparent; }
+  details { margin-top: 6px; font-size: 13px; color: var(--muted); }
+  details li { margin: 2px 0; }
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; }
+  .examples button { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+                     border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  .empty { color: var(--muted); text-align: center; margin: auto 0; }
+  form { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 4px; }
+  textarea { flex: 1; resize: none; font: inherit; padding: 10px 12px; border-radius: 10px;
+             border: 1px solid var(--border); background: var(--card); color: var(--text); min-height: 46px; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button.send { font: inherit; font-weight: 600; padding: 0 18px; border: 0; border-radius: 10px;
+                background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  button.send:disabled { opacity: .5; cursor: default; }
+  .counter { font-size: 12px; color: var(--muted); text-align: right; margin-top: -10px; }
+  footer { font-size: 12px; color: var(--muted); text-align: center; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Customer Support Assistant</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Checking service…</span></div>
+  </header>
+
+  <div class="chat" id="chat">
+    <div class="empty" id="empty">
+      <p>Ask a question about the FAQ knowledge base.</p>
+      <div class="examples">
+        <button type="button">How many titles can I borrow at a time with Kindle Unlimited?</button>
+        <button type="button">How do I update the software on my Fire TV?</button>
+        <button type="button">How do I cancel my subscription?</button>
+      </div>
+    </div>
+  </div>
+
+  <form id="form">
+    <textarea id="q" rows="1" placeholder="Type your question…" maxlength="1000" required></textarea>
+    <button class="send" id="send" type="submit">Ask</button>
+  </form>
+  <div class="counter" id="counter">0 / 1000</div>
+
+  <footer>Experiment 7 · RAG + FastAPI · <a href="/docs">API docs</a></footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const chat = $("chat"), form = $("form"), q = $("q"), send = $("send");
+
+function add(cls, text) {
+  $("empty")?.remove();
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  div.textContent = text;
+  chat.appendChild(div);
+  div.scrollIntoView({ behavior: "smooth", block: "end" });
+  return div;
+}
+
+function meta(div, r) {
+  const m = document.createElement("div");
+  m.className = "meta";
+  const tags = [
+    ["Intent: " + r.intent.replace(/_/g, " ")],
+    ["Similarity: " + r.top_similarity.toFixed(2)],
+    [(r.latency_ms / 1000).toFixed(1) + " s"],
+  ];
+  if (r.retries) tags.push(["Retries: " + r.retries]);
+  if (r.used_fallback) tags.push(["Fallback answer", "warn"]);
+  for (const [t, c] of tags) {
+    const s = document.createElement("span");
+    s.className = "tag" + (c ? " " + c : "");
+    s.textContent = t;
+    m.appendChild(s);
+  }
+  div.appendChild(m);
+  if (r.sources?.length) {
+    const d = document.createElement("details");
+    d.innerHTML = "<summary>Sources (" + r.sources.length + ")</summary><ul></ul>";
+    for (const s of r.sources) {
+      const li = document.createElement("li");
+      li.textContent = s;
+      d.querySelector("ul").appendChild(li);
+    }
+    div.appendChild(d);
+  }
+}
+
+async function ask(question) {
+  add("user", question);
+  const pending = add("bot", "Thinking…");
+  send.disabled = true;
+  try {
+    const res = await fetch("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const r = await res.json();
+    if (!res.ok) {
+      pending.className = "msg error";
+      pending.textContent = Array.isArray(r.detail) ? r.detail.join("; ") : (r.detail || "Request failed");
+      return;
+    }
+    pending.textContent = r.answer;
+    meta(pending, r);
+  } catch {
+    pending.className = "msg error";
+    pending.textContent = "Could not reach the server. Please try again.";
+  } finally {
+    send.disabled = false;
+    q.focus();
+  }
+}
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const question = q.value.trim();
+  if (!question || send.disabled) return;
+  q.value = "";
+  $("counter").textContent = "0 / 1000";
+  ask(question);
+});
+q.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+});
+q.addEventListener("input", () => { $("counter").textContent = q.value.length + " / 1000"; });
+document.querySelectorAll(".examples button").forEach((b) =>
+  b.addEventListener("click", () => ask(b.textContent)));
+
+fetch("/health").then((r) => r.json()).then((h) => {
+  const ok = h.status === "ok";
+  $("dot").className = "dot " + (ok ? "ok" : "bad");
+  $("status").textContent = ok ? "Online · " + h.backend + " · " + h.chunks + " chunks" : "Degraded";
+}).catch(() => { $("dot").className = "dot bad"; $("status").textContent = "Offline"; });
+</script>
+</body>
+</html>

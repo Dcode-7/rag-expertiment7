@@ -15,7 +15,7 @@ import requests
 from langchain_community.vectorstores import FAISS
 from langchain_community.vectorstores.utils import DistanceStrategy
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import END, START, StateGraph
 
@@ -239,7 +239,7 @@ def build_chunks(pdf_path: str) -> List[Document]:
 def load_or_build_index(embeddings):
     """Build the FAISS index once and cache it on disk; rebuild only when the PDF or model changes."""
     fingerprint = {"pdf": os.path.abspath(SOURCE_PDF), "mtime": os.path.getmtime(SOURCE_PDF),
-                   "size": os.path.getsize(SOURCE_PDF), "embed_model": EMBED_MODEL}
+                   "size": os.path.getsize(SOURCE_PDF), "embed_model": EMBED_MODEL, "embedder": "fastembed"}
     meta_path = os.path.join(INDEX_DIR, "meta.json")
     if os.path.exists(meta_path):
         try:
@@ -364,8 +364,9 @@ class SupportRAG:
         if not os.path.exists(SOURCE_PDF):
             raise FileNotFoundError(f"Knowledge-base PDF not found: {SOURCE_PDF}")
         self.backend = make_backend()
-        self.embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL,
-                                                encode_kwargs={"normalize_embeddings": True})
+        # fastembed = same MiniLM model on ONNX Runtime (no PyTorch): ~3x less RAM, fits 512 MB hosts.
+        # Its output is already L2-normalized, so inner product == cosine similarity.
+        self.embeddings = FastEmbedEmbeddings(model_name=EMBED_MODEL)
         self.vector_store, self.n_chunks = load_or_build_index(self.embeddings)
         self.graph = self._build_graph()
 

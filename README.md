@@ -9,6 +9,10 @@ experiment7/
 ├── app.py              # FastAPI: /health, /ask, validation, error handling, logging, timing
 ├── support_rag.py      # Expt 6 RAG pipeline + pluggable LLM backend (ollama | cloud | mock)
 ├── test_api.py         # Runs the testing checklist, writes observation_table.csv
+├── static/index.html   # Simple chat UI served at /
+├── Dockerfile          # Container image (model + FAISS index baked in)
+├── render.yaml         # Render free-plan deployment blueprint
+├── .dockerignore
 ├── requirements.txt
 ├── .env.example        # Copy to .env (secrets/config; never upload)
 ├── .gitignore
@@ -52,10 +56,10 @@ CLOUD_API_KEY=<your token>
 ```bash
 uvicorn app:app --host 127.0.0.1 --port 8000
 ```
-First start downloads the embedding model (~90 MB) and builds the FAISS index into
+First start downloads the embedding model (~90 MB, via fastembed) and builds the FAISS index into
 `faiss_index/`; later starts load the cached index. Wait for `startup ok` in the console.
 
-Open **http://127.0.0.1:8000/docs** → `POST /ask` → *Try it out*:
+Open **http://127.0.0.1:8000/** for the chat UI, or **http://127.0.0.1:8000/docs** → `POST /ask` → *Try it out*:
 ```json
 { "question": "How many titles can I borrow at a time with Kindle Unlimited?" }
 ```
@@ -91,3 +95,40 @@ Both runs write to `observation_table.csv`. Logs (with latency per request) are 
 | Any other bug | 500 | `internal_error` |
 
 Every response carries `X-Request-ID` and `X-Response-Time-ms` headers.
+
+## 5. Docker (local)
+
+Requires Docker Desktop.
+```bash
+docker build -t support-rag .
+# Ollama running on your PC (the container reaches the host via host.docker.internal):
+docker run --rm -p 8080:8080 -e LLM_BACKEND=ollama \
+  -e OLLAMA_BASE_URL=http://host.docker.internal:11434 support-rag
+# or no LLM at all:
+docker run --rm -p 8080:8080 -e LLM_BACKEND=mock support-rag
+```
+Open http://localhost:8080. `.env` is excluded from the image, so pass config with `-e` or `--env-file .env`.
+
+## 6. Deploy to Render (free, no card)
+
+Render's free plan gives 512 MB RAM. The app uses ~280 MB because embeddings run through
+fastembed (ONNX) rather than PyTorch, and the FAISS index is built into the image.
+
+1. Push this repo to GitHub (`.env` is git-ignored, so your keys stay local):
+   ```bash
+   git push origin main
+   ```
+2. Sign up at https://render.com with your GitHub account (no card needed for the free plan).
+3. **New → Blueprint**, pick this repo. Render reads `render.yaml` and asks for:
+   - `CLOUD_MODEL`: a model id available on your Hugging Face free quota
+   - `CLOUD_API_KEY`: your Hugging Face access token (stored as a secret)
+
+   No token? After the first deploy, open the service's **Environment** tab and set `LLM_BACKEND=mock`.
+4. The first build takes ~5–10 min. Then open `https://support-rag-xxxx.onrender.com` for the UI,
+   `/docs` for Swagger, `/health?deep=true` to check the LLM backend. Logs are on the service's **Logs** tab.
+
+Free-plan notes: the service sleeps after ~15 min without traffic, and the first request after
+that takes ~1 min to wake it. Ollama can't run on the free plan, so use `cloud` or `mock`.
+
+Run the checklist against it: `API_URL=https://support-rag-xxxx.onrender.com python test_api.py`
+(PowerShell: `$env:API_URL="https://..."; python test_api.py`).

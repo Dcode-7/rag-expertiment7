@@ -8,12 +8,13 @@ from typing import List
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 from support_rag import BackendError, SupportRAG
 
 MAX_QUESTION_CHARS = int(os.getenv("MAX_QUESTION_CHARS", "1000"))
+UI_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
 
 os.makedirs("logs", exist_ok=True)
 _fmt = logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
@@ -26,7 +27,7 @@ if not _root.handlers:
 _file = RotatingFileHandler("logs/app.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
 _file.setFormatter(_fmt)
 _root.addHandler(_file)
-for noisy in ("httpx", "urllib3", "sentence_transformers", "faiss"):
+for noisy in ("httpx", "urllib3", "fastembed", "faiss"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 log = logging.getLogger("support_api")
 
@@ -122,6 +123,9 @@ async def on_validation_error(request: Request, exc: RequestValidationError):
 # Endpoints
 @app.get("/", include_in_schema=False)
 def root():
+    """Simple chat UI; the Swagger UI stays at /docs."""
+    if os.path.exists(UI_FILE):
+        return FileResponse(UI_FILE)
     return RedirectResponse("/docs")
 
 

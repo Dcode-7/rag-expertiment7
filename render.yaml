@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: support-rag
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: LLM_BACKEND
+        value: cloud          # Ollama can't run on Render free; use `mock` if you have no token
+      - key: CLOUD_BASE_URL
+        value: https://router.huggingface.co/v1
+      - key: CLOUD_MODEL
+        sync: false           # asked for in the Render dashboard
+      - key: CLOUD_API_KEY
+        sync: false           # secret: entered in the dashboard, never committed
