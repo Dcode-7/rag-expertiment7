@@ -10,9 +10,11 @@ services:
         value: cloud          # Ollama can't run on Render free; use `mock` if you have no token
       - key: CLOUD_BASE_URL
         value: https://api.groq.com/openai/v1   # free, no card; Hugging Face free credits run out fast
+      - key: EXTRACTIVE_FALLBACK
+        value: "true"         # if the LLM fails (quota, outage), answer with the FAQ passage, not an error
       - key: MAX_NEW_TOKENS
         value: "1024"         # gpt-oss reasons before answering; 200 tokens can leave the answer empty
       - key: CLOUD_MODEL
-        sync: false           # asked for in the Render dashboard
+        sync: false           # optional: comma-separated preference list; auto-picked if unavailable
       - key: CLOUD_API_KEY
         sync: false           # secret: entered in the dashboard, never committed

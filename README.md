@@ -130,6 +130,12 @@ fastembed (ONNX) rather than PyTorch, and the FAISS index is built into the imag
 4. The first build takes ~5–10 min. Then open `https://support-rag-xxxx.onrender.com` for the UI,
    `/docs` for Swagger, `/health?deep=true` to check the LLM backend. Logs are on the service's **Logs** tab.
 
+Resilience (cloud backend): the app checks the provider's model list at startup and switches
+automatically if `CLOUD_MODEL` has been retired (the log says which model it picked). Rate limits,
+timeouts and provider errors are retried once. With `EXTRACTIVE_FALLBACK=true` (set in `render.yaml`),
+if the LLM still fails (e.g. free quota used up) the answer is the best-matching FAQ passage, tagged
+"LLM offline" in the UI, instead of an error. Locally it defaults to `false`, so the backend-down test still sees 503.
+
 Free-plan notes: the service sleeps after ~15 min without traffic, and the first request after
 that takes ~1 min to wake it. Ollama can't run on the free plan, so use `cloud` or `mock`.
 

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 import unicodedata
 from collections import Counter
 from typing import List, TypedDict
@@ -31,6 +32,8 @@ MIN_RELEVANCE = float(os.getenv("MIN_RELEVANCE", "0.40"))
 LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama").strip().lower()
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "200"))
+# true = if the LLM fails, answer with the best-matching FAQ passage instead of returning 503
+EXTRACTIVE_FALLBACK = os.getenv("EXTRACTIVE_FALLBACK", "false").strip().lower() in ("1", "true", "yes")
 
 
 # 1. LLM backends 
@@ -77,46 +80,104 @@ class OllamaBackend:
 
 
 class CloudBackend:
-    """Option A - hosted, OpenAI-compatible chat-completions API
-    (e.g. Hugging Face Inference Providers router, Groq, OpenRouter ...)."""
+    """Option A - hosted, OpenAI-compatible chat-completions API (Groq, Hugging Face, ...).
+
+    Self-healing, because free providers retire models and run out of quota:
+    - CLOUD_MODEL may be a comma-separated preference list (or empty). At startup the provider's
+      /models list is checked and the first available model is used; if none of the configured
+      ones exist, a known-good default (PREFERRED_MODELS) or any chat model is picked instead.
+    - If a model disappears later (HTTP 404), the next one is chosen and the call retried.
+    - Rate limits (429), provider errors (5xx) and timeouts are retried once."""
     name = "cloud"
+    PREFERRED_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "llama-3.1-8b-instant",
+                        "meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it"]
+    NON_CHAT = ("whisper", "tts", "guard", "embed", "orpheus", "playai", "compound", "safeguard")
 
     def __init__(self):
         self.base_url = os.getenv("CLOUD_BASE_URL", "https://router.huggingface.co/v1").rstrip("/")
-        self.model = os.getenv("CLOUD_MODEL", "").strip()
         self._api_key = os.getenv("CLOUD_API_KEY", "").strip()  # read from env, never hard-coded
-        if not self.model or not self._api_key:
-            raise RuntimeError("LLM_BACKEND=cloud needs CLOUD_MODEL and CLOUD_API_KEY in .env")
+        if not self._api_key:
+            raise RuntimeError("LLM_BACKEND=cloud needs CLOUD_API_KEY")
+        self.wanted = [m.strip() for m in os.getenv("CLOUD_MODEL", "").split(",") if m.strip()]
+        self.dead = set()                       # models the provider said don't exist
+        self.model = self._pick_model()
+
+    def _available(self):
+        """Model ids the provider currently serves, or None if the list can't be fetched."""
+        try:
+            r = requests.get(f"{self.base_url}/models", timeout=10,
+                             headers={"Authorization": f"Bearer {self._api_key}"})
+            return [m["id"] for m in r.json()["data"]] if r.ok else None
+        except Exception:
+            return None
+
+    def _pick_model(self) -> str:
+        available = self._available()
+        candidates = [m for m in self.wanted + self.PREFERRED_MODELS if m not in self.dead]
+        if available is None:                   # can't check - trust the configuration
+            if not candidates:
+                raise RuntimeError("no CLOUD_MODEL configured and the provider's model list is unreachable")
+            return candidates[0]
+        live = set(available) - self.dead
+        choice = next((m for m in candidates if m in live), None) or next(
+            (m for m in available if m in live and not any(k in m.lower() for k in self.NON_CHAT)), None)
+        if choice is None:
+            raise RuntimeError("the provider offers no usable chat model for this key")
+        if self.wanted and choice != self.wanted[0]:
+            log.warning("CLOUD_MODEL '%s' not available - using '%s' instead", self.wanted[0], choice)
+        log.info("cloud backend | %s | model=%s", self.base_url, choice)
+        return choice
+
+    def _post(self, messages: List[dict]):
+        payload = {"model": self.model, "messages": messages, "temperature": 0,
+                   "max_tokens": MAX_NEW_TOKENS}
+        if "gpt-oss" in self.model:             # reasoning model: its thinking also uses max_tokens
+            payload.update(max_tokens=max(MAX_NEW_TOKENS, 1024), reasoning_effort="low")
+        return requests.post(f"{self.base_url}/chat/completions", json=payload, timeout=LLM_TIMEOUT,
+                             headers={"Authorization": f"Bearer {self._api_key}"})
 
     def generate(self, messages: List[dict]) -> str:
-        payload = {"model": self.model, "messages": messages,
-                   "max_tokens": MAX_NEW_TOKENS, "temperature": 0}
-        try:
-            r = requests.post(f"{self.base_url}/chat/completions", json=payload, timeout=LLM_TIMEOUT,
-                              headers={"Authorization": f"Bearer {self._api_key}"})
-        except requests.RequestException as e:
-            raise BackendError(f"Cloud API unreachable ({type(e).__name__})") from e
-        if r.status_code in (401, 403):
-            raise BackendError(f"Cloud API rejected the key (HTTP {r.status_code}) - check CLOUD_API_KEY")
-        if r.status_code == 402:
-            raise BackendError("Cloud API free credits used up (HTTP 402) - switch provider or add credits")
-        if r.status_code == 429:
-            raise BackendError("Cloud API quota / rate limit exceeded (HTTP 429)")
-        if r.status_code != 200:
-            raise BackendError(f"Cloud API returned HTTP {r.status_code} - check CLOUD_MODEL / CLOUD_BASE_URL"
-                               f" | {r.text[:200]}")   # provider's message (e.g. model not found); logs only
-        try:
-            return r.json()["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, ValueError, TypeError) as e:
-            raise BackendError("Cloud API returned an unexpected response format") from e
+        for attempt in range(2):
+            last = attempt == 1
+            try:
+                r = self._post(messages)
+            except requests.RequestException as e:
+                if last:
+                    raise BackendError(f"Cloud API unreachable ({type(e).__name__})") from e
+                continue
+            if r.status_code == 404 and not last:        # model retired / renamed - switch and retry
+                log.warning("model '%s' not found at provider - switching", self.model)
+                self.dead.add(self.model)
+                try:
+                    self.model = self._pick_model()
+                except RuntimeError as e:
+                    raise BackendError(str(e)) from e
+                continue
+            if (r.status_code == 429 or r.status_code >= 500) and not last:
+                time.sleep(2)
+                continue
+            if r.status_code in (401, 403):
+                raise BackendError(f"Cloud API rejected the key (HTTP {r.status_code}) - check CLOUD_API_KEY")
+            if r.status_code == 402:
+                raise BackendError("Cloud API free credits used up (HTTP 402) - switch provider or add credits")
+            if r.status_code == 429:
+                raise BackendError("Cloud API quota / rate limit exceeded (HTTP 429)")
+            if r.status_code != 200:
+                raise BackendError(f"Cloud API returned HTTP {r.status_code} (model={self.model})"
+                                   f" | {r.text[:200]}")   # provider's message; logs only
+            try:
+                content = r.json()["choices"][0]["message"].get("content") or ""
+            except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
+                raise BackendError("Cloud API returned an unexpected response format") from e
+            if content.strip():
+                return content.strip()
+            if last:
+                raise BackendError(f"Cloud API returned an empty answer (model={self.model}) - raise MAX_NEW_TOKENS")
+        raise BackendError("Cloud API failed after retry")
 
     def ping(self) -> bool:
-        try:
-            r = requests.get(f"{self.base_url}/models", timeout=5,
-                             headers={"Authorization": f"Bearer {self._api_key}"})
-            return r.ok
-        except Exception:
-            return False
+        available = self._available()
+        return available is not None and self.model in available
 
 
 class MockBackend:
@@ -281,6 +342,7 @@ class SupportState(TypedDict, total=False):
     retry_count: int
     final_answer: str
     used_fallback: bool
+    llm_down: bool
 
 
 INTENT_RULES = [
@@ -370,6 +432,7 @@ class SupportRAG:
         if not os.path.exists(SOURCE_PDF):
             raise FileNotFoundError(f"Knowledge-base PDF not found: {SOURCE_PDF}")
         self.backend = make_backend()
+        self.extractive = MockBackend()     # used only when EXTRACTIVE_FALLBACK is on and the LLM fails
         # fastembed = same MiniLM model on ONNX Runtime (no PyTorch): ~3x less RAM, fits 512 MB hosts.
         # Its output is already L2-normalized, so inner product == cosine similarity.
         # small batches keep peak RAM low if the index ever has to be built on a 512 MB host
@@ -405,10 +468,17 @@ class SupportRAG:
             {"role": "user", "content": f"FAQ CONTEXT:\n{state.get('context', '')}\n\n"
                                         f"CUSTOMER QUESTION:\n{state['question']}"},
         ]
-        draft = self.backend.generate(messages)         
+        try:
+            draft = self.backend.generate(messages)
+            llm_down = False
+        except BackendError as e:
+            if not EXTRACTIVE_FALLBACK:
+                raise
+            log.warning("LLM failed, answering from FAQ text instead | %s", e)
+            draft, llm_down = self.extractive.generate(messages), True
         draft = re.split(r"\n\s*(?:CUSTOMER QUESTION|FAQ CONTEXT|Q:)", draft)[0].strip()
         draft = re.sub(r"^(ANSWER|A)\s*:\s*", "", draft)
-        return {"draft": draft}
+        return {"draft": draft, "llm_down": llm_down}
 
     def review_answer(self, state: SupportState):
         draft = state.get("draft", "").strip()
@@ -417,7 +487,8 @@ class SupportRAG:
         bad = unsupported_numbers(draft, state.get("context", ""), state["question"])
         if bad:
             return {"final_answer": "", "review_note": f"numbers not in FAQ context: {bad}"}
-        return {"final_answer": draft, "review_note": "grounded in retrieved FAQ", "used_fallback": False}
+        note = "grounded in retrieved FAQ" + (" (LLM unavailable - FAQ excerpt)" if state.get("llm_down") else "")
+        return {"final_answer": draft, "review_note": note, "used_fallback": False}
 
     def rewrite_query(self, state: SupportState):
         extra = CATEGORY_TERMS.get(state.get("intent", "general_support"), "customer support")
