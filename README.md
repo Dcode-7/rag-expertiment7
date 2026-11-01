@@ -120,7 +120,7 @@ fastembed (ONNX) rather than PyTorch, and the FAISS index is built into the imag
    ```
 2. Sign up at https://render.com with your GitHub account (no card needed for the free plan).
 3. **New → Blueprint**, pick this repo. Render reads `render.yaml` and asks for:
-   - `CLOUD_MODEL`: `llama-3.1-8b-instant`
+   - `CLOUD_MODEL`: `openai/gpt-oss-20b` (also add `MAX_NEW_TOKENS` = `1024`: it reasons before answering)
    - `CLOUD_API_KEY`: a free Groq API key from https://console.groq.com (stored as a secret)
 
    (Hugging Face's free inference credits are tiny and return HTTP 402 once used up, so the

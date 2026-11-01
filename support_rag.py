@@ -103,7 +103,8 @@ class CloudBackend:
         if r.status_code == 429:
             raise BackendError("Cloud API quota / rate limit exceeded (HTTP 429)")
         if r.status_code != 200:
-            raise BackendError(f"Cloud API returned HTTP {r.status_code} - check CLOUD_MODEL / CLOUD_BASE_URL")
+            raise BackendError(f"Cloud API returned HTTP {r.status_code} - check CLOUD_MODEL / CLOUD_BASE_URL"
+                               f" | {r.text[:200]}")   # provider's message (e.g. model not found); logs only
         try:
             return r.json()["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError, ValueError, TypeError) as e:
