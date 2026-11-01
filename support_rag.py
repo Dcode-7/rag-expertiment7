@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -238,8 +239,10 @@ def build_chunks(pdf_path: str) -> List[Document]:
 
 def load_or_build_index(embeddings):
     """Build the FAISS index once and cache it on disk; rebuild only when the PDF or model changes."""
-    fingerprint = {"pdf": os.path.abspath(SOURCE_PDF), "mtime": os.path.getmtime(SOURCE_PDF),
-                   "size": os.path.getsize(SOURCE_PDF), "embed_model": EMBED_MODEL, "embedder": "fastembed"}
+    # Content hash, not path/mtime: Docker layers can change both, which forced a rebuild at startup
+    with open(SOURCE_PDF, "rb") as f:
+        pdf_sha256 = hashlib.sha256(f.read()).hexdigest()
+    fingerprint = {"pdf_sha256": pdf_sha256, "embed_model": EMBED_MODEL, "embedder": "fastembed"}
     meta_path = os.path.join(INDEX_DIR, "meta.json")
     if os.path.exists(meta_path):
         try:
@@ -366,7 +369,8 @@ class SupportRAG:
         self.backend = make_backend()
         # fastembed = same MiniLM model on ONNX Runtime (no PyTorch): ~3x less RAM, fits 512 MB hosts.
         # Its output is already L2-normalized, so inner product == cosine similarity.
-        self.embeddings = FastEmbedEmbeddings(model_name=EMBED_MODEL)
+        # small batches keep peak RAM low if the index ever has to be built on a 512 MB host
+        self.embeddings = FastEmbedEmbeddings(model_name=EMBED_MODEL, batch_size=16)
         self.vector_store, self.n_chunks = load_or_build_index(self.embeddings)
         self.graph = self._build_graph()
 
