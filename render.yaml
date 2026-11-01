@@ -9,7 +9,7 @@ services:
       - key: LLM_BACKEND
         value: cloud          # Ollama can't run on Render free; use `mock` if you have no token
       - key: CLOUD_BASE_URL
-        value: https://router.huggingface.co/v1
+        value: https://api.groq.com/openai/v1   # free, no card; Hugging Face free credits run out fast
       - key: CLOUD_MODEL
         sync: false           # asked for in the Render dashboard
       - key: CLOUD_API_KEY

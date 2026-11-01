@@ -120,8 +120,11 @@ fastembed (ONNX) rather than PyTorch, and the FAISS index is built into the imag
    ```
 2. Sign up at https://render.com with your GitHub account (no card needed for the free plan).
 3. **New → Blueprint**, pick this repo. Render reads `render.yaml` and asks for:
-   - `CLOUD_MODEL`: a model id available on your Hugging Face free quota
-   - `CLOUD_API_KEY`: your Hugging Face access token (stored as a secret)
+   - `CLOUD_MODEL`: `llama-3.1-8b-instant`
+   - `CLOUD_API_KEY`: a free Groq API key from https://console.groq.com (stored as a secret)
+
+   (Hugging Face's free inference credits are tiny and return HTTP 402 once used up, so the
+   blueprint points `CLOUD_BASE_URL` at Groq's OpenAI-compatible API instead.)
 
    No token? After the first deploy, open the service's **Environment** tab and set `LLM_BACKEND=mock`.
 4. The first build takes ~5–10 min. Then open `https://support-rag-xxxx.onrender.com` for the UI,

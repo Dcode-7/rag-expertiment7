@@ -98,6 +98,8 @@ class CloudBackend:
             raise BackendError(f"Cloud API unreachable ({type(e).__name__})") from e
         if r.status_code in (401, 403):
             raise BackendError(f"Cloud API rejected the key (HTTP {r.status_code}) - check CLOUD_API_KEY")
+        if r.status_code == 402:
+            raise BackendError("Cloud API free credits used up (HTTP 402) - switch provider or add credits")
         if r.status_code == 429:
             raise BackendError("Cloud API quota / rate limit exceeded (HTTP 429)")
         if r.status_code != 200:
